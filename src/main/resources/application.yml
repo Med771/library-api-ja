@@ -1,0 +1,36 @@
+spring:
+  application:
+    name: library-api
+
+server:
+  port: 8080
+  servlet:
+    context-path: /api
+
+# Конфигурация приложения
+app:
+  library:
+    # Директория с EPUB файлами относительно рабочей директории
+    dir: library
+    # Максимальный размер страницы в символах
+    max-length: 1000
+
+  cors:
+    allowed-origin: "https://example.com"
+    swagger-path: "/swagger-ui/**"
+
+# Настройки логирования
+logging:
+  level:
+    ru.ai.libraryapi: INFO
+    org.springframework: WARN
+  pattern:
+    console: "%d{yyyy-MM-dd HH:mm:ss} - %msg%n"
+
+# Настройки документации API
+springdoc:
+  api-docs:
+    path: /api-docs
+  swagger-ui:
+    path: /swagger-ui.html
+    operationsSorter: method

@@ -33,13 +33,13 @@ public class WebCfg {
             public void addCorsMappings(CorsRegistry registry) {
                 // Разрешаем доступ только с основного сайта для всех эндпоинтов
                 registry.addMapping("/**")
-                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru/")
+                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru", "http://localhost:8080")
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowCredentials(true);
 
                 // Разрешаем доступ к Swagger только с основного сайта
                 registry.addMapping(swaggerPath)
-                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru/")
+                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru", "http://localhost:8080")
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowCredentials(true);
             }

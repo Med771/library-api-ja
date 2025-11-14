@@ -1,5 +1,6 @@
 package ru.ai.libraryapi.config;
 
+import lombok.NonNull;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
@@ -30,18 +31,13 @@ public class WebCfg {
     public WebMvcConfigurer corsConfigurer() {
         return new WebMvcConfigurer() {
             @Override
-            public void addCorsMappings(CorsRegistry registry) {
-                // Разрешаем доступ только с основного сайта для всех эндпоинтов
-                registry.addMapping("/**")
-                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru", "http://localhost:8080")
+            public void addCorsMappings(@NonNull CorsRegistry registry) {
+                registry.addMapping("/**") // или /api/** — если нужно ограничить маршруты
+                        .allowedOriginPatterns("*") // вместо allowedOrigins("*"), чтобы можно было использовать allowCredentials(true)
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                        .allowCredentials(true);
-
-                // Разрешаем доступ к Swagger только с основного сайта
-                registry.addMapping(swaggerPath)
-                        .allowedOrigins(allowedOrigin, "http://api.librarysin.ru", "http://localhost:8080")
-                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
-                        .allowCredentials(true);
+                        .allowedHeaders("*")
+                        .allowCredentials(true)
+                        .maxAge(3600);
             }
         };
     }

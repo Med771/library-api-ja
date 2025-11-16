@@ -17,7 +17,7 @@ app:
 
   cors:
     allowed-origin: "https://example.com"
-    swagger-path: "/swagger-ui/**"
+    swagger-path: "/swagger-ui"
 
   swagger:
     url: "https://example.com"

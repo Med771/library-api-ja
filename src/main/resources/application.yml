@@ -13,11 +13,14 @@ app:
     # Директория с EPUB файлами относительно рабочей директории
     dir: library
     # Максимальный размер страницы в символах
-    max-length: 1000
+    max-length: 3000
 
   cors:
     allowed-origin: "https://example.com"
     swagger-path: "/swagger-ui/**"
+
+  swagger:
+    url: "https://example.com"
 
 # Настройки логирования
 logging:

@@ -2,141 +2,170 @@ package ru.ai.libraryapi;
 
 import lombok.RequiredArgsConstructor;
 import lombok.extern.slf4j.Slf4j;
-import nl.siegmann.epublib.domain.Book;
-import nl.siegmann.epublib.domain.Resource;
-import nl.siegmann.epublib.domain.SpineReference;
-import nl.siegmann.epublib.epub.EpubReader;
-import org.jsoup.Jsoup;
-import org.jsoup.nodes.Document;
-import org.jsoup.nodes.Element;
-import org.jsoup.select.Elements;
 import org.springframework.stereotype.Service;
 import ru.ai.libraryapi.config.BookCfg;
 
-import java.io.FileInputStream;
-import java.io.IOException;
-import java.nio.charset.StandardCharsets;
 import java.nio.file.Paths;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 @Slf4j
 @Service
 @RequiredArgsConstructor
 public class BookServ {
+    private static final Pattern bodyPattern = Pattern.compile("(?is)<body[^>]*>(.*?)</body>");
+    private static final Pattern OPEN_DIV_PATTERN = Pattern.compile("(?is)<div[^>]*>");
+    private static final Pattern CLOSE_DIV_PATTERN = Pattern.compile("(?is)</div>");
+    private static final Pattern P_PATTERN = Pattern.compile("(?is)<p.*?>.*?</p>");
 
     private final BookCfg bookCfg;
+
+    private final EpubExtractor epubExtractor;
 
     public ResDTO getPages(ReqDTO req) {
         try {
             String epubFilePath = Paths.get(bookCfg.getLibraryPath(), req.path()).toString();
-            log.info("Чтение EPUB файла: {}", epubFilePath);
+            log.info("Reading EPUB file: {}", epubFilePath);
 
-            List<List<String>> pages = splitEpubByPages(epubFilePath, bookCfg.LIBRARY_MAX_LENGTH);
+            List<List<String>> pages = splitEpubByPages(epubFilePath);
 
             int from = req.from();
             int to = Math.min(pages.size(), req.to());
 
-            log.info("Возвращаем страницы {}–{} (всего страниц: {})", from, to, pages.size());
+            log.info("Returning pages {}–{} (total pages: {})", from, to, pages.size());
 
             return new ResDTO(pages.subList(from, to), from, to, pages.size());
 
         } catch (Exception e) {
-            log.error("Ошибка при разборе EPUB: {}", e.getMessage(), e);
+            log.error("Error when open EPUB: {}", e.getMessage(), e);
             return new ResDTO(new ArrayList<>(), req.from(), req.to(), 0);
         }
     }
 
-    /**
-     * Парсинг EPUB и разбиение на страницы.
-     */
-    public static List<List<String>> splitEpubByPages(String epubPath, int pageSize) throws IOException {
+    private List<List<String>> splitEpubByPages(String epubPath) {
+        try {
+            List<String> pages = epubExtractor.extractChaptersInReadingOrder(epubPath);
+            List<String> cleanedPages = cleanPages(pages);
+            List<String> splitPages = splitPages(cleanedPages);
 
-        List<List<String>> pages = new ArrayList<>();
-        List<String> currentPage = new ArrayList<>();
-        int currentSize = 0;
+            List<List<String>> splitPagesList = new ArrayList<>();
 
-        log.info("Начало разбиения EPUB: {}", epubPath);
+            for (String page : splitPages) {
+                log.info("Processing page {}", page.length());
 
-        try (FileInputStream fis = new FileInputStream(epubPath)) {
-
-            Book book = new EpubReader().readEpub(fis);
-
-            // === Правильное чтение главы через spine ===
-            List<SpineReference> spine = book.getSpine().getSpineReferences();
-            log.info("Найдено {} spine-ресурсов", spine.size());
-
-            List<Resource> contents = new ArrayList<>();
-            for (SpineReference ref : spine) {
-                contents.add(ref.getResource());
+                splitPagesList.add(List.of(page));
             }
 
-            for (int i = 0; i < contents.size(); i++) {
-                Resource res = contents.get(i);
+            return splitPagesList;
+        }
+        catch (Exception e) {
+            return new ArrayList<>();
+        }
+    }
 
-                byte[] data = res.getData();
-                if (data == null) continue;
+    public List<String> cleanPages(List<String> pages) {
+        List<String> cleanedPages = new ArrayList<>();
 
-                Document doc = Jsoup.parse(new String(data, StandardCharsets.UTF_8));
+        for (String page : pages) {
+            Matcher matcher = bodyPattern.matcher(page);
 
-                // Удаляем ненужные элементы
-                doc.select("svg, img, script, style, a, sup").remove();
+            String bodyContent = matcher.find() ? matcher.group(1) : "";
 
-                // Выбираем текстовые блоки
-                Elements blocks = doc.select(
-                        "p, div, section, article, blockquote, " +
-                                "h1, h2, h3, h4, h5, h6, ul, ol, li"
-                );
+            String bodyClean;
 
-                log.debug("Ресурс {} содержит {} элементов", i, blocks.size());
+            bodyClean = bodyContent.replaceAll("(?is)<a\\b[^>]*>.*?</a>", "");
+            bodyClean = bodyClean.replaceAll("(?is)<img\\b[^>]*>", "");
+            bodyClean = bodyClean.replaceAll("(?is)<" + "span" + "\\b[^>]*>", "");
+            bodyClean = bodyClean.replaceAll("(?is)</" + "span" + ">", "");
+            bodyClean = bodyClean.replaceAll("(?is)<svg\\b[^>]*>.*?</svg>", "");
 
-                for (Element block : blocks) {
-
-                    if (block.text().isBlank()) continue;
-
-                    String cleanHtml = cleanBlock(block);
-                    int blockLen = block.text().length();
-
-                    // Влезает?
-                    if (currentSize + blockLen < pageSize) {
-                        currentPage.add(cleanHtml);
-                        currentSize += blockLen;
-                    } else {
-                        // Закрываем страницу
-                        if (!currentPage.isEmpty()) {
-                            pages.add(new ArrayList<>(currentPage));
-                            log.debug("Страница создана: {} символов", currentSize);
-                        }
-
-                        currentPage.clear();
-                        currentPage.add(cleanHtml);
-                        currentSize = blockLen;
-                    }
-                }
-            }
-
-            // Последняя страница
-            if (!currentPage.isEmpty()) {
-                pages.add(new ArrayList<>(currentPage));
-                log.debug("Добавлена последняя страница: {} символов", currentSize);
+            if (!bodyClean.isBlank()) {
+                cleanedPages.add(bodyClean);
             }
         }
 
-        log.info("Готово — страниц: {}", pages.size());
+        return cleanedPages;
+    }
+
+    private static final int MIN_PAGE_LENGTH = 60;
+
+    private List<String> splitPages(List<String> blocks) {
+        List<String> pages = new ArrayList<>();
+        StringBuilder currentPage = new StringBuilder();
+
+        for (String block : blocks) {
+            if (block.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+                if (!currentPage.isEmpty()) {
+                    pages.add(currentPage.toString());
+                    currentPage = new StringBuilder();
+                }
+                pages.addAll(splitLargeBlock(block));
+                continue;
+            }
+
+            if (currentPage.length() + block.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+                if (!currentPage.isEmpty()) {
+                    pages.add(currentPage.toString());
+                }
+                currentPage = new StringBuilder();
+            }
+
+            if (block.length() < MIN_PAGE_LENGTH) {
+                if (!currentPage.isEmpty()) {
+                    pages.add(currentPage.toString());
+                    currentPage = new StringBuilder();
+                }
+                pages.add(block);
+                continue;
+            }
+
+            currentPage.append(block);
+        }
+
+        if (!currentPage.isEmpty()) {
+            pages.add(currentPage.toString());
+        }
+
         return pages;
     }
 
-    /**
-     * Очистка одного HTML-блока.
-     */
-    private static String cleanBlock(Element block) {
-        block.removeAttr("class");
-        block.removeAttr("style");
-        block.removeAttr("id");
+    private List<String> splitLargeBlock(String block) {
+        List<String> subPages = new ArrayList<>();
 
-        String html = block.outerHtml();
-        html = html.replaceAll(">\\s+<", "><").trim();
+        String openingDiv = extractFirstTag(block, OPEN_DIV_PATTERN);
+        String closingDiv = extractFirstTag(block, CLOSE_DIV_PATTERN);
 
-        return html;
+        Matcher matcher = P_PATTERN.matcher(block);
+        StringBuilder current = new StringBuilder();
+        if (!openingDiv.isEmpty()) current.append(openingDiv);
+
+        while (matcher.find()) {
+            String subBlock = matcher.group();
+
+            if (current.length() + subBlock.length() + closingDiv.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+                if (!closingDiv.isEmpty()) current.append(closingDiv);
+                subPages.add(current.toString());
+
+                current = new StringBuilder();
+                if (!openingDiv.isEmpty()) current.append(openingDiv);
+            }
+
+            current.append(subBlock);
+        }
+
+        if (!current.isEmpty()) {
+            if (!closingDiv.isEmpty()) current.append(closingDiv);
+            subPages.add(current.toString());
+        }
+
+        return subPages;
+    }
+
+
+    private String extractFirstTag(String text, Pattern pattern) {
+        Matcher matcher = pattern.matcher(text);
+        return matcher.find() ? matcher.group() : "";
     }
 }

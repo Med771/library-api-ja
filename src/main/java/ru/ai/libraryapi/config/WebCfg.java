@@ -11,10 +11,13 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 public class WebCfg {
 
     /**
-     * Разрешенный домен для доступа к API.
+     * Разрешенный домены для доступа к API.
      */
     @Value("${app.cors.allowed-origin}")
     private String allowedOrigin;
+
+    @Value("${app.swagger.url}")
+    private String url;
 
     /**
      * Путь для доступа к Swagger UI.
@@ -32,8 +35,16 @@ public class WebCfg {
         return new WebMvcConfigurer() {
             @Override
             public void addCorsMappings(@NonNull CorsRegistry registry) {
-                registry.addMapping("/**") // или /api/** — если нужно ограничить маршруты
-                        .allowedOriginPatterns("*") // вместо allowedOrigins("*"), чтобы можно было использовать allowCredentials(true)
+                registry.addMapping("/**")
+                        .allowedOriginPatterns(allowedOrigin, url)
+                        .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
+                        .allowedHeaders("*")
+                        .allowCredentials(true)
+                        .maxAge(3600);
+
+                // CORS для Swagger UI (если swaggerPath отличается)
+                registry.addMapping(swaggerPath + "/**")
+                        .allowedOriginPatterns(allowedOrigin)
                         .allowedMethods("GET", "POST", "PUT", "DELETE", "OPTIONS")
                         .allowedHeaders("*")
                         .allowCredentials(true)

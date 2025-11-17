@@ -7,28 +7,27 @@ import io.swagger.v3.oas.annotations.responses.ApiResponse;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import jakarta.validation.Valid;
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.ResponseEntity;
 import org.springframework.web.bind.annotation.*;
 
 /**
  * REST контроллер для работы с EPUB книгами.
- * 
  * Предоставляет API для разбора EPUB файлов и получения их страниц
  * в удобном для чтения формате.
  */
-@Slf4j
 @RestController
 @RequestMapping(path = "epub")
 @RequiredArgsConstructor
 @Tag(name = "EPUB Books", description = "API для работы с EPUB книгами")
 public class BookCnt {
+    private static final Logger logger = LoggerFactory.getLogger(BookCnt.class);
     
     private final BookServ bookServ;
 
     /**
      * Получение страниц из EPUB файла.
-     * 
      * Принимает путь к EPUB файлу и диапазон страниц для возврата.
      * Разбирает EPUB файл, очищает HTML контент и возвращает страницы
      * в удобном для чтения формате.
@@ -57,11 +56,11 @@ public class BookCnt {
     )
     @PostMapping("pages")
     public ResponseEntity<ResDTO> getPages(@Valid @RequestBody ReqDTO reqDTO) {
-        log.info("Получен запрос на разбор EPUB: {}", reqDTO.path());
+        logger.info("Получен запрос на разбор EPUB: {}", reqDTO.path());
         
         ResDTO response = bookServ.getPages(reqDTO);
         
-        log.info("Возвращено {} страниц для файла: {}", 
+        logger.info("Возвращено {} страниц для файла: {}",
                 response.pages().size(), reqDTO.path());
         
         return ResponseEntity.ok(response);

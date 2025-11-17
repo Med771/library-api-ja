@@ -1,132 +1,192 @@
 package ru.ai.libraryapi;
 
 import lombok.RequiredArgsConstructor;
-import lombok.extern.slf4j.Slf4j;
+import org.jsoup.Jsoup;
+import org.jsoup.nodes.Document;
+import org.jsoup.nodes.Element;
+import org.jsoup.select.Elements;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import ru.ai.libraryapi.config.BookCfg;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
+import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
-@Slf4j
+/**
+ * Service for processing EPUB books: extraction, cleaning, and splitting into pages.
+ */
 @Service
 @RequiredArgsConstructor
 public class BookServ {
-    private static final Pattern bodyPattern = Pattern.compile("(?is)<body[^>]*>(.*?)</body>");
-    private static final Pattern OPEN_DIV_PATTERN = Pattern.compile("(?is)<div[^>]*>");
-    private static final Pattern CLOSE_DIV_PATTERN = Pattern.compile("(?is)</div>");
-    private static final Pattern P_PATTERN = Pattern.compile("(?is)<p.*?>.*?</p>");
+    private static final Logger logger = LoggerFactory.getLogger(BookServ.class);
+
+    private static final Pattern BODY_PATTERN = Pattern.compile("(?is)<body[^>]*>(.*?)</body>");
+
+    // Example selectors from config (can be List<String> in BookCfg)
+    private static final String REMOVE_SELECTORS = "img, svg, meta, link, style";
+    private static final String UNWRAP_SELECTORS = "span, a";
 
     private final BookCfg bookCfg;
-
     private final EpubExtractor epubExtractor;
 
+    /**
+     * Retrieves paginated content from an EPUB file.
+     *
+     * @param req Request DTO with path and page range.
+     * @return Response DTO with pages and metadata.
+     */
     public ResDTO getPages(ReqDTO req) {
         try {
             String epubFilePath = Paths.get(bookCfg.getLibraryPath(), req.path()).toString();
-            log.info("Reading EPUB file: {}", epubFilePath);
+            logger.info("Reading EPUB file: {}", epubFilePath);
 
-            List<List<String>> pages = splitEpubByPages(epubFilePath);
+            List<String> pages = splitEpubByPages(epubFilePath);
 
             int from = req.from();
-            int to = Math.min(pages.size(), req.to());
+            int to = Math.min(req.to(), pages.size());
 
-            log.info("Returning pages {}–{} (total pages: {})", from, to, pages.size());
-
-            return new ResDTO(pages.subList(from, to), from, to, pages.size());
+            logger.info("Returning pages {}–{} (total pages: {})", from, to, pages.size());
+            return new ResDTO(Collections.singletonList(pages.subList(from, to)), from, to, pages.size());  // Assuming ResDTO updated to List<String>
 
         } catch (Exception e) {
-            log.error("Error when open EPUB: {}", e.getMessage());
+            logger.error("Error opening EPUB: {}", e.getMessage(), e);
             return new ResDTO(new ArrayList<>(), req.from(), req.to(), 0);
         }
     }
 
-    private List<List<String>> splitEpubByPages(String epubPath) {
+    private List<String> splitEpubByPages(String epubPath) {
         try {
-            List<String> pages = epubExtractor.extractChaptersInReadingOrder(epubPath);
-            log.info("Get pages {}", pages.size());
-            List<String> cleanedPages = cleanPages(pages);
-            log.info("Cleaned pages {}", cleanedPages.size());
-            List<String> splitPages = splitPages(cleanedPages);
-            log.info("Split pages {}", splitPages.size());
+            List<String> rawChapters = epubExtractor.extractChaptersInReadingOrder(epubPath);
+            int rawSize = rawChapters.size();
+            List<String> cleanedChapters = cleanPages(rawChapters);
+            int cleanedSize = cleanedChapters.size();
+            List<String> splitPages = splitPages(cleanedChapters);
+            int splitSize = splitPages.size();
 
-            List<List<String>> splitPagesList = new ArrayList<>();
-
-            for (String page : splitPages) {
-                log.info("Processing page {}", page.length());
-
-                splitPagesList.add(List.of(page));
-            }
-
-            return splitPagesList;
-        }
-        catch (Exception e) {
-            log.error("Failed when split Epub {}", e.getMessage());
-
+            logger.info("Processed EPUB: raw chapters={}, cleaned={}, split pages={}", rawSize, cleanedSize, splitSize);
+            return splitPages;
+        } catch (Exception e) {
+            logger.error("Failed to split EPUB: {}", e.getMessage(), e);
             return new ArrayList<>();
         }
     }
 
-    public List<String> cleanPages(List<String> pages) {
-        List<String> cleanedPages = new ArrayList<>();
+    /**
+     * Cleans raw chapters from EPUB.
+     *
+     * @param rawChapters List of raw HTML strings.
+     * @return List of cleaned HTML strings.
+     */
+    public List<String> cleanPages(List<String> rawChapters) {
+        List<String> cleanedChapters = new ArrayList<>();
 
-        for (String page : pages) {
-            Matcher matcher = bodyPattern.matcher(page);
-
-            String bodyContent = matcher.find() ? matcher.group(1) : "";
-
-            String bodyClean;
-
-            bodyClean = bodyContent.replaceAll("(?is)<a\\b[^>]*>.*?</a>", "");
-            bodyClean = bodyClean.replaceAll("(?is)<img\\b[^>]*>", "");
-            bodyClean = bodyClean.replaceAll("(?is)<" + "span" + "\\b[^>]*>", "");
-            bodyClean = bodyClean.replaceAll("(?is)</" + "span" + ">", "");
-            bodyClean = bodyClean.replaceAll("(?is)<svg\\b[^>]*>.*?</svg>", "");
-
-            if (!bodyClean.isBlank()) {
-                cleanedPages.add(bodyClean);
+        for (int index = 0; index < rawChapters.size(); index++) {
+            try {
+                if (logger.isDebugEnabled()) {
+                    logger.debug("Cleaning chapter #{}", index);
+                }
+                String cleaned = cleanChapter(rawChapters.get(index));
+                if (!cleaned.isBlank()) {
+                    cleanedChapters.add(cleaned);
+                } else {
+                    logger.warn("Cleaned chapter #{} is blank", index);
+                }
+            } catch (Exception e) {
+                logger.error("Error cleaning chapter #{}: {}", index, e.getMessage());
             }
         }
 
-        return cleanedPages;
+        return cleanedChapters;
     }
 
-    private static final int MIN_PAGE_LENGTH = 60;
+    private String cleanChapter(String html) {
+        // Remove BOM
+        html = html.replace("\uFEFF", "");
 
-    private List<String> splitPages(List<String> blocks) {
+        // Extract body content
+        String body;
+        Matcher bodyMatcher = BODY_PATTERN.matcher(html);
+        if (bodyMatcher.find()) {
+            body = bodyMatcher.group(1);
+        } else {
+            body = html;
+            logger.warn("Body not found; using full content");
+        }
+
+        // Clean with JSoup
+        return cleanHtml(body);
+    }
+
+    private String cleanHtml(String html) {
+        Document doc = Jsoup.parse(html);
+
+        // Remove unwanted elements
+        doc.select(REMOVE_SELECTORS).remove();
+
+        // Unwrap inline elements
+        doc.select(UNWRAP_SELECTORS).unwrap();
+
+        // Remove style attributes from all elements
+        doc.select("[style]").removeAttr("style");
+
+        // Remove empty divs and ps (including those with &nbsp; after cleanup)
+        doc.select("div:empty, p:empty").remove();
+
+        // Normalize whitespace
+        String cleaned = doc.body().html().trim().replaceAll("\\s{2,}", " ");
+        if (logger.isDebugEnabled()) {
+            logger.debug("Cleaned HTML length: {}", cleaned.length());
+        }
+        return cleaned;
+    }
+
+    /**
+     * Splits cleaned chapters into pages based on max length.
+     *
+     * @param cleanedChapters List of cleaned HTML strings.
+     * @return List of page strings.
+     */
+    private List<String> splitPages(List<String> cleanedChapters) {
         List<String> pages = new ArrayList<>();
         StringBuilder currentPage = new StringBuilder();
 
-        for (String block : blocks) {
-            if (block.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+        for (String chapter : cleanedChapters) {
+            String trimmedChapter = chapter.trim();
+            if (trimmedChapter.isEmpty()) {
+                continue;
+            }
+
+            if (chapter.length() > bookCfg.LIBRARY_MAX_LENGTH) {
                 if (!currentPage.isEmpty()) {
                     pages.add(currentPage.toString());
                     currentPage = new StringBuilder();
                 }
-                pages.addAll(splitLargeBlock(block));
+                pages.addAll(splitLargeChapter(chapter));
                 continue;
             }
 
-            if (currentPage.length() + block.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+            if (chapter.length() < 60) {  // Inline MIN_PAGE_LENGTH
+                if (!currentPage.isEmpty()) {
+                    pages.add(currentPage.toString());
+                    currentPage = new StringBuilder();
+                }
+                pages.add(chapter);
+                continue;
+            }
+
+            if (currentPage.length() + chapter.length() > bookCfg.LIBRARY_MAX_LENGTH) {
                 if (!currentPage.isEmpty()) {
                     pages.add(currentPage.toString());
                 }
                 currentPage = new StringBuilder();
             }
 
-            if (block.length() < MIN_PAGE_LENGTH) {
-                if (!currentPage.isEmpty()) {
-                    pages.add(currentPage.toString());
-                    currentPage = new StringBuilder();
-                }
-                pages.add(block);
-                continue;
-            }
-
-            currentPage.append(block);
+            currentPage.append(chapter);
         }
 
         if (!currentPage.isEmpty()) {
@@ -136,41 +196,42 @@ public class BookServ {
         return pages;
     }
 
-    private List<String> splitLargeBlock(String block) {
+    private List<String> splitLargeChapter(String chapter) {
         List<String> subPages = new ArrayList<>();
 
-        String openingDiv = extractFirstTag(block, OPEN_DIV_PATTERN);
-        String closingDiv = extractFirstTag(block, CLOSE_DIV_PATTERN);
+        // Parse fragment for efficiency
+        Document doc = Jsoup.parseBodyFragment(chapter);
+        Elements children = doc.body().children();
 
-        Matcher matcher = P_PATTERN.matcher(block);
         StringBuilder current = new StringBuilder();
-        if (!openingDiv.isEmpty()) current.append(openingDiv);
 
-        while (matcher.find()) {
-            String subBlock = matcher.group();
+        for (Element el : children) {
+            String subBlock = el.outerHtml();
 
-            if (current.length() + subBlock.length() + closingDiv.length() > bookCfg.LIBRARY_MAX_LENGTH) {
-                if (!closingDiv.isEmpty()) current.append(closingDiv);
-                subPages.add(current.toString());
-
+            if (current.length() + subBlock.length() > bookCfg.LIBRARY_MAX_LENGTH) {
+                String candidate = current.toString().trim();
+                if (!candidate.isEmpty()) {
+                    subPages.add(candidate);
+                }
                 current = new StringBuilder();
-                if (!openingDiv.isEmpty()) current.append(openingDiv);
             }
 
             current.append(subBlock);
         }
 
         if (!current.isEmpty()) {
-            if (!closingDiv.isEmpty()) current.append(closingDiv);
-            subPages.add(current.toString());
+            String candidate = current.toString().trim();
+            if (!candidate.isEmpty()) {
+                subPages.add(candidate);
+            }
+        }
+
+        // Fallback for unsplittable large elements
+        if (subPages.isEmpty() && !chapter.trim().isEmpty()) {
+            subPages.add(chapter.trim());
+            logger.warn("Added unsplittable large chapter (length: {})", chapter.length());
         }
 
         return subPages;
-    }
-
-
-    private String extractFirstTag(String text, Pattern pattern) {
-        Matcher matcher = pattern.matcher(text);
-        return matcher.find() ? matcher.group() : "";
     }
 }

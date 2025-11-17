@@ -39,7 +39,7 @@ public class BookServ {
             return new ResDTO(pages.subList(from, to), from, to, pages.size());
 
         } catch (Exception e) {
-            log.error("Error when open EPUB: {}", e.getMessage(), e);
+            log.error("Error when open EPUB: {}", e.getMessage());
             return new ResDTO(new ArrayList<>(), req.from(), req.to(), 0);
         }
     }
@@ -47,8 +47,11 @@ public class BookServ {
     private List<List<String>> splitEpubByPages(String epubPath) {
         try {
             List<String> pages = epubExtractor.extractChaptersInReadingOrder(epubPath);
+            log.info("Get pages {}", pages.size());
             List<String> cleanedPages = cleanPages(pages);
+            log.info("Cleaned pages {}", cleanedPages.size());
             List<String> splitPages = splitPages(cleanedPages);
+            log.info("Split pages {}", splitPages.size());
 
             List<List<String>> splitPagesList = new ArrayList<>();
 
@@ -61,6 +64,8 @@ public class BookServ {
             return splitPagesList;
         }
         catch (Exception e) {
+            log.error("Failed when split Epub {}", e.getMessage());
+
             return new ArrayList<>();
         }
     }

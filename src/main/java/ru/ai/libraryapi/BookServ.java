@@ -12,7 +12,6 @@ import ru.ai.libraryapi.config.BookCfg;
 
 import java.nio.file.Paths;
 import java.util.ArrayList;
-import java.util.Collections;
 import java.util.List;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
@@ -29,7 +28,7 @@ public class BookServ {
 
     // Example selectors from config (can be List<String> in BookCfg)
     private static final String REMOVE_SELECTORS = "img, svg, meta, link, style";
-    private static final String UNWRAP_SELECTORS = "span, a";
+    private static final String UNWRAP_SELECTORS = "span, a, b, strong, i, em";
 
     private final BookCfg bookCfg;
     private final EpubExtractor epubExtractor;
@@ -45,13 +44,17 @@ public class BookServ {
             String epubFilePath = Paths.get(bookCfg.getLibraryPath(), req.path()).toString();
             logger.info("Reading EPUB file: {}", epubFilePath);
 
-            List<String> pages = splitEpubByPages(epubFilePath);
+            List<List<String>> pages = new ArrayList<>();
+
+            for (String page: splitEpubByPages(epubFilePath)) {
+                pages.add(List.of(page));
+            }
 
             int from = req.from();
             int to = Math.min(req.to(), pages.size());
 
             logger.info("Returning pages {}–{} (total pages: {})", from, to, pages.size());
-            return new ResDTO(Collections.singletonList(pages.subList(from, to)), from, to, pages.size());  // Assuming ResDTO updated to List<String>
+            return new ResDTO(pages.subList(from, to), from, to, pages.size());
 
         } catch (Exception e) {
             logger.error("Error opening EPUB: {}", e.getMessage(), e);
@@ -65,7 +68,8 @@ public class BookServ {
             int rawSize = rawChapters.size();
             List<String> cleanedChapters = cleanPages(rawChapters);
             int cleanedSize = cleanedChapters.size();
-            List<String> splitPages = splitPages(cleanedChapters);
+            List<String> mergedChapters = mergeHeaders(cleanedChapters);
+            List<String> splitPages = splitPages(mergedChapters);
             int splitSize = splitPages.size();
 
             logger.info("Processed EPUB: raw chapters={}, cleaned={}, split pages={}", rawSize, cleanedSize, splitSize);
@@ -134,32 +138,71 @@ public class BookServ {
         // Remove style attributes from all elements
         doc.select("[style]").removeAttr("style");
 
+        // Remove Calibre-specific navigation (TOC-like ul and hr)
+        doc.select("ul[class^=calibre], hr[class^=calibre]").remove();
+
+        // Remove duplicate headings (e.g., repeated titles)
+        removeDuplicateHeadings(doc);
+
         // Remove empty divs and ps (including those with &nbsp; after cleanup)
         doc.select("div:empty, p:empty").remove();
 
-        // Normalize whitespace
-        String cleaned = doc.body().html().trim().replaceAll("\\s{2,}", " ");
+        // Normalize whitespace and remove excessive empty lines
+        String cleaned = doc.body().html().trim();
+        cleaned = cleaned.replaceAll("\\s{2,}", " ");  // Multiple spaces to single
+        cleaned = cleaned.replaceAll("(<br\\s*/?>\\s*){2,}", "<br><br>");  // Max 1 empty line equivalent
+        cleaned = cleaned.replaceAll("(\\n{3,})", "\n\n");  // Max 2 newlines
+
         if (logger.isDebugEnabled()) {
             logger.debug("Cleaned HTML length: {}", cleaned.length());
         }
         return cleaned;
     }
 
+    private void removeDuplicateHeadings(Document doc) {
+        Elements headings = doc.select("h1, h2, h3, h4, h5, h6");
+        String prevText = null;
+        for (Element heading : headings) {
+            String text = heading.text().trim();
+            if (text.equals(prevText)) {
+                heading.remove();
+            } else {
+                prevText = text;
+            }
+        }
+    }
+
+    private List<String> mergeHeaders(List<String> chapters) {
+        List<String> merged = new ArrayList<>();
+        for (int i = 0; i < chapters.size(); i++) {
+            String chapter = chapters.get(i);
+            if (isPrimarilyHeader(chapter) && i + 1 < chapters.size()) {
+                merged.add(chapter + chapters.get(i + 1));
+                i++;  // Skip the next chapter as it's merged
+            } else {
+                merged.add(chapter);
+            }
+        }
+        return merged;
+    }
+
     /**
      * Splits cleaned chapters into pages based on max length.
      *
-     * @param cleanedChapters List of cleaned HTML strings.
+     * @param chapters List of cleaned HTML strings.
      * @return List of page strings.
      */
-    private List<String> splitPages(List<String> cleanedChapters) {
+    private List<String> splitPages(List<String> chapters) {
         List<String> pages = new ArrayList<>();
         StringBuilder currentPage = new StringBuilder();
 
-        for (String chapter : cleanedChapters) {
+        for (String chapter : chapters) {
             String trimmedChapter = chapter.trim();
             if (trimmedChapter.isEmpty()) {
                 continue;
             }
+
+            int minPageLength = getMinPageLength(chapter);  // Dynamic min length
 
             if (chapter.length() > bookCfg.LIBRARY_MAX_LENGTH) {
                 if (!currentPage.isEmpty()) {
@@ -170,12 +213,11 @@ public class BookServ {
                 continue;
             }
 
-            if (chapter.length() < 60) {  // Inline MIN_PAGE_LENGTH
-                if (!currentPage.isEmpty()) {
-                    pages.add(currentPage.toString());
-                    currentPage = new StringBuilder();
-                }
-                pages.add(chapter);
+            boolean isHeader = isPrimarilyHeader(chapter);
+
+            if (chapter.length() < minPageLength || isHeader) {
+                // Merge with current or next by appending to current
+                currentPage.append(chapter);
                 continue;
             }
 
@@ -194,6 +236,31 @@ public class BookServ {
         }
 
         return pages;
+    }
+
+    private int getMinPageLength(String chapter) {
+        // Check if there's clear division: parse and see if multiple children
+        Document doc = Jsoup.parseBodyFragment(chapter);
+        Elements children = doc.body().children();
+        if (children.size() <= 1) {
+            return 500;  // No clear division - increase min to 500
+        } else {
+            return 60;  // Default min
+        }
+    }
+
+    private boolean isPrimarilyHeader(String chapter) {
+        Document doc = Jsoup.parseBodyFragment(chapter);
+        Elements children = doc.body().children();
+        if (children.size() <= 2) {
+            Element first = children.first();
+            if (first != null) {
+                String tag = first.tagName();
+                String className = first.attr("class");
+                return tag.matches("h[1-6]") || (tag.equals("div") && className.matches("title.*"));
+            }
+        }
+        return false;
     }
 
     private List<String> splitLargeChapter(String chapter) {

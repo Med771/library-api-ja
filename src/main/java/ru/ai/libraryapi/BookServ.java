@@ -174,15 +174,25 @@ public class BookServ {
 
     private List<String> mergeHeaders(List<String> chapters) {
         List<String> merged = new ArrayList<>();
-        for (int i = 0; i < chapters.size(); i++) {
-            String chapter = chapters.get(i);
-            if (isPrimarilyHeader(chapter) && i + 1 < chapters.size()) {
-                merged.add(chapter + chapters.get(i + 1));
-                i++;  // Skip the next chapter as it's merged
+        StringBuilder pendingHeader = new StringBuilder();
+
+        for (String chapter : chapters) {
+            if (isPrimarilyHeader(chapter)) {
+                pendingHeader.append(chapter);
             } else {
-                merged.add(chapter);
+                if (!pendingHeader.isEmpty()) {
+                    merged.add("<div>" + pendingHeader + "</div>" + chapter);
+                    pendingHeader = new StringBuilder();
+                } else {
+                    merged.add(chapter);
+                }
             }
         }
+
+        if (!pendingHeader.isEmpty()) {
+            merged.add("<div>" + pendingHeader + "</div>");
+        }
+
         return merged;
     }
 
@@ -257,7 +267,12 @@ public class BookServ {
             if (first != null) {
                 String tag = first.tagName();
                 String className = first.attr("class");
-                return tag.matches("h[1-6]") || (tag.equals("div") && className.matches("title.*"));
+                String id = first.attr("id");
+                String text = first.text().trim();
+                return tag.matches("h[1-6]") ||
+                        (tag.equals("div") && className.matches(".*(title|head).*")) ||
+                        (!id.isEmpty() && id.matches(".*toc.*")) ||
+                        (text.length() < 200 && children.size() == 1);
             }
         }
         return false;
@@ -297,6 +312,15 @@ public class BookServ {
         if (subPages.isEmpty() && !chapter.trim().isEmpty()) {
             subPages.add(chapter.trim());
             logger.warn("Added unsplittable large chapter (length: {})", chapter.length());
+        }
+
+        // Post-process to merge standalone headers
+        for (int i = 0; i < subPages.size() - 1; i++) {
+            if (isPrimarilyHeader(subPages.get(i))) {
+                subPages.set(i, subPages.get(i) + subPages.get(i + 1));
+                subPages.remove(i + 1);
+                i--;  // Re-check the new merged subpage if needed
+            }
         }
 
         return subPages;
